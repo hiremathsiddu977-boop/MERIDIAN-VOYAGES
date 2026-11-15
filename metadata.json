@@ -1,0 +1,8 @@
+{
+  "name": "Meridian Voyages",
+  "description": "Fast, glassy tourism business portal with customer & owner login, Cloud SQL P&L dashboard, and Gemini multi-turn travel concierge.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
