@@ -689,6 +689,14 @@ export default function App() {
         token={authToken}
         mode={chatMode}
         onModeChange={setChatMode}
+        packages={allPackages}
+        onNavigate={(path) => {
+          if (path === '/') {
+            setSearch('');
+            handleRegionChange('All');
+          }
+          navigate(path);
+        }}
       />
     </div>
   );

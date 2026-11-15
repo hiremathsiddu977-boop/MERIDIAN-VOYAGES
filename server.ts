@@ -30,14 +30,18 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
+function getAiClient(): GoogleGenAI | null {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey) return null;
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
     },
-  },
-});
+  });
+}
 
 const PACKAGE_CATALOG_SUMMARY = `
 Meridian Voyages Curated Packages:
@@ -415,8 +419,9 @@ async function startServer() {
   // Multi-turn Gemini Travel Concierge & Owner Business Advisor
   app.post('/api/chat', async (req, res) => {
     try {
-      if (!process.env.GEMINI_API_KEY) {
-        return res.status(500).json({
+      const ai = getAiClient();
+      if (!ai) {
+        return res.status(503).json({
           error: 'Travel concierge service is currently unavailable.',
         });
       }
@@ -446,7 +451,7 @@ async function startServer() {
             customRows
               .map(
                 (p, i) =>
-                  `${7 + i}. ${p.title} (${p.country}, ${p.region}) - ${p.days} Days / ${p.nights} Nights, Max ${p.maxGuests} guests, $${p.basePrice.toLocaleString()}/guest (+$${p.privateUpgrade.toLocaleString()} Private tier), Best ${p.season}. ${p.summary}`
+                  `${7 + i}. ${p.title} (${p.country}, ${p.region}) [/packages/${p.slug}] - ${p.days} Days / ${p.nights} Nights, Max ${p.maxGuests} guests, $${p.basePrice.toLocaleString()}/guest (+$${p.privateUpgrade.toLocaleString()} Private tier), Best ${p.season}. ${p.summary}`
               )
               .join('\n');
         }
@@ -454,12 +459,22 @@ async function startServer() {
         // Ignore if custom packages fetch fails
       }
 
+      const siteNavigationGuide =
+        `Website Pages You Can Guide Users To:\n` +
+        `- All Packages Storefront (/)\n` +
+        `- Regional Filters: Europe (/destinations/europe), Asia (/destinations/asia), Nordics (/destinations/nordics)\n` +
+        `- Package Detail & Instant Booking (/packages/santorini-caldera-escape, /packages/kyoto-autumn-sanctuary, /packages/swiss-alps-glacier-express, /packages/bali-ubud-cliffside-retreat, /packages/iceland-northern-lights-fjord, /packages/amalfi-coast-private-charter)\n` +
+        `- Home Login, My Trips & Trip Cancellation (/home)\n` +
+        `- Corporate & Group Proposal Form (/inquire)\n` +
+        `- Owner Financial P&L & Destinations Studio (/owner, owner login required)`;
+
       let systemInstruction =
-        `You are the Meridian Voyages Concierge, a refined and fast travel advisor for a luxury tourism business portal. ` +
+        `You are the Meridian Voyages Concierge, a refined and fast travel and site-navigation advisor for a luxury tourism business portal. ` +
         `Answer concisely (2-5 sentences or crisp '-' bullet points) using clean plain text without markdown asterisks (** or *). ` +
         `Use accurate details from our curated packages:\n` +
-        `${PACKAGE_CATALOG_SUMMARY}${customSummary}\n` +
-        `Help customers compare destinations, pick seasons, estimate trip totals (Signature vs Private tier), and suggest itineraries.`;
+        `${PACKAGE_CATALOG_SUMMARY}${customSummary}\n\n` +
+        `${siteNavigationGuide}\n\n` +
+        `Help customers compare destinations, pick seasons, estimate trip totals (Signature vs Private tier), and navigate to the right page or package.`;
 
       if (isOwner) {
         try {
@@ -476,6 +491,7 @@ async function startServer() {
               .slice(0, 3)
               .map((p) => `${p.packageTitle} ($${p.profit.toLocaleString()} profit across ${p.guests} guests)`)
               .join('; ')}. ` +
+            `${siteNavigationGuide}\n` +
             `Give crisp, actionable revenue, margin, and loss-reduction advice in clean plain text without markdown asterisks (**).`;
         } catch {
           // Proceed cleanly with base catalog if owner snapshot fails
@@ -515,7 +531,11 @@ async function startServer() {
               : {}),
           },
         });
-        const response = await chat.sendMessage({ message: latestText });
+        const responsePromise = chat.sendMessage({ message: latestText });
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Model request timed out')), 5500)
+        );
+        const response = await Promise.race([responsePromise, timeoutPromise]);
         return response.text || '';
       };
 
@@ -542,7 +562,7 @@ async function startServer() {
       return res.json({ reply, modelUsed });
     } catch (error: unknown) {
       console.error('Gemini chat error:', error);
-      return res.status(500).json({
+      return res.status(503).json({
         error: 'Unable to reach the travel concierge right now. Please try again.',
       });
     }
