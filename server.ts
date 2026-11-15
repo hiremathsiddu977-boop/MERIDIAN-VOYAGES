@@ -456,7 +456,8 @@ async function startServer() {
 
       let systemInstruction =
         `You are the Meridian Voyages Concierge, a refined and fast travel advisor for a luxury tourism business portal. ` +
-        `Answer concisely (2-5 sentences or crisp bullet points) using accurate details from our curated packages:\n` +
+        `Answer concisely (2-5 sentences or crisp '-' bullet points) using clean plain text without markdown asterisks (** or *). ` +
+        `Use accurate details from our curated packages:\n` +
         `${PACKAGE_CATALOG_SUMMARY}${customSummary}\n` +
         `Help customers compare destinations, pick seasons, estimate trip totals (Signature vs Private tier), and suggest itineraries.`;
 
@@ -475,40 +476,75 @@ async function startServer() {
               .slice(0, 3)
               .map((p) => `${p.packageTitle} ($${p.profit.toLocaleString()} profit across ${p.guests} guests)`)
               .join('; ')}. ` +
-            `Give crisp, actionable revenue, margin, and loss-reduction advice.`;
+            `Give crisp, actionable revenue, margin, and loss-reduction advice in clean plain text without markdown asterisks (**).`;
         } catch {
           // Proceed cleanly with base catalog if owner snapshot fails
         }
       }
 
-      const model =
+      const cleanedMessages = rawMessages
+        .map((m: { role?: unknown; text?: unknown }) => ({
+          role: m?.role === 'model' ? ('model' as const) : ('user' as const),
+          text: String(m?.text || '').trim(),
+        }))
+        .filter((m: { text: string }) => m.text.length > 0);
+
+      // Ensure conversation history starts with a user turn
+      const firstUserIndex = cleanedMessages.findIndex((m: { role: string }) => m.role === 'user');
+      const normalizedMessages =
+        firstUserIndex >= 0 ? cleanedMessages.slice(firstUserIndex) : cleanedMessages;
+
+      if (normalizedMessages.length === 0) {
+        return res.status(400).json({ error: 'Please enter a message.' });
+      }
+
+      const priorTurns = normalizedMessages.slice(0, -1).map((m: { role: 'user' | 'model'; text: string }) => ({
+        role: m.role,
+        parts: [{ text: m.text }],
+      }));
+      const latestText = normalizedMessages[normalizedMessages.length - 1].text;
+
+      const askModel = async (targetModel: 'gemini-3.1-flash-lite' | 'gemini-4-hydrogen') => {
+        const chat = ai.chats.create({
+          model: targetModel,
+          history: priorTurns,
+          config: {
+            systemInstruction,
+            ...(targetModel === 'gemini-4-hydrogen'
+              ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+              : {}),
+          },
+        });
+        const response = await chat.sendMessage({ message: latestText });
+        return response.text || '';
+      };
+
+      const primaryModel =
         speedMode === 'fast' ? 'gemini-3.1-flash-lite' : 'gemini-4-hydrogen';
 
-      const priorTurns = rawMessages.slice(0, -1).map((m: { role: string; text: string }) => ({
-        role: m.role === 'model' ? 'model' : 'user',
-        parts: [{ text: String(m.text || '') }],
-      }));
-      const latestText = String(rawMessages[rawMessages.length - 1]?.text || '').trim();
+      let reply = '';
+      let modelUsed = primaryModel;
+      try {
+        reply = await askModel(primaryModel);
+      } catch (primaryError) {
+        if (primaryModel !== 'gemini-3.1-flash-lite') {
+          console.warn('Primary concierge model fallback triggered:', primaryError);
+          modelUsed = 'gemini-3.1-flash-lite';
+          reply = await askModel('gemini-3.1-flash-lite');
+        } else {
+          throw primaryError;
+        }
+      }
 
-      const chat = ai.chats.create({
-        model,
-        history: priorTurns,
-        config: {
-          systemInstruction,
-          ...(model === 'gemini-4-hydrogen'
-            ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
-            : {}),
-        },
-      });
-
-      const response = await chat.sendMessage({ message: latestText });
-      const reply = response.text || 'I could not generate a response right now.';
-      return res.json({ reply, modelUsed: model });
+      if (!reply) {
+        reply = 'I could not generate a response right now. Please try rephrasing your question.';
+      }
+      return res.json({ reply, modelUsed });
     } catch (error: unknown) {
       console.error('Gemini chat error:', error);
-      const msg =
-        error instanceof Error ? error.message : 'Unable to reach travel concierge.';
-      return res.status(500).json({ error: msg });
+      return res.status(500).json({
+        error: 'Unable to reach the travel concierge right now. Please try again.',
+      });
     }
   });
 

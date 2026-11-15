@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { MessageSquare, Minus, Send, Trash2, X } from 'lucide-react';
+import { MessageSquare, Minus, RotateCcw, Send, Trash2, X } from 'lucide-react';
 
 export type ChatPanelMode = 'open' | 'minimized' | 'closed';
 
@@ -19,15 +19,16 @@ export function GeminiChatbot({
   mode: ChatPanelMode;
   onModeChange: (next: ChatPanelMode) => void;
 }) {
-  const [speedMode, setSpeedMode] = useState<'balanced' | 'fast'>('balanced');
+  const [speedMode, setSpeedMode] = useState<'fast' | 'balanced'>('fast');
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [lastFailedText, setLastFailedText] = useState<string | null>(null);
 
   const initialGreeting =
     userRole === 'owner'
       ? 'Hello Siddharth. Ask me for margin breakdowns, top-performing routes, or ways to reduce cancellation losses.'
-      : 'Welcome to Meridian Voyages. Ask me to compare Santorini, Kyoto, the Swiss Alps, Bali, Iceland, or Amalfi Coast packages.';
+      : 'Welcome to Meridian Voyages. Ask me to compare Santorini, Kyoto, the Swiss Alps, Bali, Iceland, Amalfi Coast, or any custom destination.';
 
   const [messages, setMessages] = useState<ChatMessage[]>([
     { role: 'model', text: initialGreeting },
@@ -36,42 +37,94 @@ export function GeminiChatbot({
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    setMessages((prev) => {
+      if (prev.length === 1 && prev[0].role === 'model') {
+        return [{ role: 'model', text: initialGreeting }];
+      }
+      return prev;
+    });
+  }, [initialGreeting]);
+
+  useEffect(() => {
     if (scrollRef.current && mode === 'open') {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages, mode, loading]);
+  }, [messages, mode, loading, error]);
 
-  const sendMessage = async (textOverride?: string) => {
+  const postChat = async (
+    payloadMessages: ChatMessage[],
+    requestedSpeed: 'fast' | 'balanced'
+  ): Promise<string> => {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        messages: payloadMessages,
+        speedMode: requestedSpeed,
+      }),
+    });
+
+    const rawText = await res.text();
+    let json: { reply?: string; error?: string } | null = null;
+    try {
+      json = JSON.parse(rawText);
+    } catch {
+      json = null;
+    }
+
+    if (!res.ok || !json || typeof json.reply !== 'string') {
+      const serverErr =
+        json?.error ||
+        (res.status >= 500
+          ? 'The concierge service timed out. Please retry.'
+          : 'Unable to complete your request.');
+      throw new Error(serverErr);
+    }
+
+    return json.reply;
+  };
+
+  const sendMessage = async (textOverride?: string, isRetry = false) => {
     const text = (textOverride ?? input).trim();
     if (!text || loading) return;
 
-    const nextThread: ChatMessage[] = [...messages, { role: 'user', text }];
-    setMessages(nextThread);
-    if (!textOverride) setInput('');
+    const baseMessages = isRetry ? messages : [...messages, { role: 'user' as const, text }];
+    if (!isRetry) {
+      setMessages(baseMessages);
+      setInput('');
+    }
+
+    // Exclude the client-side greeting before sending conversation turns to the backend
+    const conversationPayload = baseMessages.filter(
+      (m, idx) => !(idx === 0 && m.role === 'model')
+    );
+
     setError('');
+    setLastFailedText(null);
     setLoading(true);
 
     try {
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-      };
-      if (token) headers.Authorization = `Bearer ${token}`;
+      let reply: string;
+      try {
+        reply = await postChat(conversationPayload, speedMode);
+      } catch {
+        // Automatic single fast retry if the first call hit a transient proxy or gateway hiccup
+        await new Promise((r) => setTimeout(r, 350));
+        reply = await postChat(conversationPayload, 'fast');
+      }
 
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          messages: nextThread,
-          speedMode,
-        }),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Unable to send message.');
-
-      setMessages((prev) => [...prev, { role: 'model', text: json.reply }]);
+      setMessages((prev) => [...prev, { role: 'model', text: reply }]);
     } catch (err: unknown) {
+      setLastFailedText(text);
       setError(
-        err instanceof Error ? err.message : 'Unable to connect to travel assistant.'
+        err instanceof Error
+          ? err.message
+          : 'Unable to connect to travel concierge. Please try again.'
       );
     } finally {
       setLoading(false);
@@ -105,15 +158,15 @@ export function GeminiChatbot({
   }
 
   return (
-    <div className="fixed bottom-4 right-4 z-50">
+    <div className="fixed bottom-3 right-3 z-50 sm:bottom-4 sm:right-4">
       {mode === 'open' ? (
         <div
           role="dialog"
           aria-label="Travel Concierge Chat"
-          className="glass-panel flex h-[min(460px,calc(100vh-2rem))] w-[min(calc(100vw-2rem),390px)] flex-col overflow-hidden rounded-3xl"
+          className="flex h-[min(480px,calc(100dvh-5.25rem))] w-[min(calc(100vw-1.5rem),390px)] flex-col overflow-hidden rounded-3xl border border-white/20 bg-slate-950/92 shadow-[0_24px_64px_-12px_rgba(0,0,0,0.88)] backdrop-blur-2xl"
         >
           {/* Header */}
-          <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/15 px-4 py-3">
+          <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/15 bg-slate-950/80 px-4 py-3">
             <div className="min-w-0">
               <h2 className="font-display truncate text-lg font-semibold text-white">
                 {userRole === 'owner' ? 'Executive Advisor' : 'Travel Concierge'}
@@ -122,7 +175,7 @@ export function GeminiChatbot({
                 <button
                   type="button"
                   onClick={() =>
-                    setSpeedMode((m) => (m === 'balanced' ? 'fast' : 'balanced'))
+                    setSpeedMode((m) => (m === 'fast' ? 'balanced' : 'fast'))
                   }
                   className="hover:text-amber-200 transition-colors"
                 >
@@ -134,6 +187,7 @@ export function GeminiChatbot({
                   onClick={() => {
                     setMessages([{ role: 'model', text: initialGreeting }]);
                     setError('');
+                    setLastFailedText(null);
                   }}
                   className="inline-flex items-center gap-1 hover:text-amber-200 transition-colors"
                 >
@@ -178,10 +232,10 @@ export function GeminiChatbot({
                 }`}
               >
                 <div
-                  className={`max-w-[84%] whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 leading-relaxed ${
+                  className={`max-w-[85%] whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 leading-relaxed ${
                     m.role === 'user'
-                      ? 'bg-white text-slate-950 font-medium'
-                      : 'border border-white/12 bg-slate-950/60 text-slate-100'
+                      ? 'bg-white text-slate-950 font-medium shadow-sm'
+                      : 'border border-white/15 bg-slate-900/90 text-slate-100'
                   }`}
                 >
                   {m.text}
@@ -191,28 +245,41 @@ export function GeminiChatbot({
 
             {loading && (
               <div className="flex justify-start">
-                <div className="rounded-2xl border border-white/12 bg-slate-950/60 px-3.5 py-2 text-xs text-slate-300">
+                <div className="rounded-2xl border border-white/15 bg-slate-900/90 px-3.5 py-2 text-xs text-slate-300">
                   Drafting reply...
                 </div>
               </div>
             )}
 
             {error && (
-              <p role="alert" className="text-xs font-medium text-rose-300 px-1">
-                {error}
-              </p>
+              <div
+                role="alert"
+                className="flex items-center justify-between gap-2 rounded-xl border border-rose-400/30 bg-rose-950/60 px-3 py-2 text-xs text-rose-200"
+              >
+                <span>{error}</span>
+                {lastFailedText && (
+                  <button
+                    type="button"
+                    onClick={() => sendMessage(lastFailedText, true)}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-white/15 px-2.5 py-1 font-semibold text-white hover:bg-white/25"
+                  >
+                    <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                    Retry
+                  </button>
+                )}
+              </div>
             )}
           </div>
 
           {/* Starter Prompts */}
           {messages.length <= 1 && (
-            <div className="flex flex-wrap gap-1.5 border-t border-white/10 px-4 py-2">
+            <div className="flex flex-wrap gap-1.5 border-t border-white/12 bg-slate-950/70 px-4 py-2">
               {quickPrompts.map((prompt) => (
                 <button
                   key={prompt}
                   type="button"
                   onClick={() => sendMessage(prompt)}
-                  className="rounded-lg border border-white/15 bg-slate-950/50 px-2.5 py-1 text-[11px] text-slate-200 transition-colors hover:border-amber-300/60 hover:text-white"
+                  className="rounded-lg border border-white/20 bg-slate-900/80 px-2.5 py-1 text-left text-[11px] text-slate-200 transition-colors hover:border-amber-300/60 hover:text-white"
                 >
                   {prompt}
                 </button>
@@ -226,7 +293,7 @@ export function GeminiChatbot({
               e.preventDefault();
               sendMessage();
             }}
-            className="flex items-center gap-2 border-t border-white/12 p-3"
+            className="flex items-center gap-2 border-t border-white/15 bg-slate-950/85 p-3"
           >
             <input
               type="text"
@@ -234,7 +301,7 @@ export function GeminiChatbot({
               onChange={(e) => setInput(e.target.value)}
               placeholder="Ask about destinations, pricing, or profit..."
               aria-label="Chat message"
-              className="flex-1 rounded-xl border border-white/20 bg-slate-950/65 px-3.5 py-2 text-sm text-white placeholder:text-slate-400 focus:border-amber-300 focus:outline-none"
+              className="flex-1 rounded-xl border border-white/20 bg-slate-900/90 px-3.5 py-2 text-sm text-white placeholder:text-slate-400 focus:border-amber-300 focus:outline-none"
             />
             <button
               type="submit"
@@ -247,7 +314,7 @@ export function GeminiChatbot({
           </form>
         </div>
       ) : (
-        <div className="glass-panel inline-flex items-center overflow-hidden rounded-2xl transition-transform duration-150 hover:-translate-y-0.5 hover:border-amber-200/50">
+        <div className="inline-flex items-center overflow-hidden rounded-2xl border border-white/20 bg-slate-950/88 shadow-xl backdrop-blur-xl transition-transform duration-150 hover:-translate-y-0.5 hover:border-amber-200/50">
           <button
             type="button"
             onClick={() => onModeChange('open')}
