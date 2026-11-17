@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { signInWithPopup } from 'firebase/auth';
 import { ArrowLeft, ArrowRight, Lock, LogOut, User } from 'lucide-react';
+import { readJsonSafe } from '../lib/api';
 import { auth, googleAuthProvider } from '../lib/firebase';
 
 export interface AuthUser {
@@ -60,8 +61,10 @@ export function HomeLoginView({
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Unable to cancel trip.');
+      const parsed = await readJsonSafe<{ booking?: CustomerBookingRow }>(res);
+      if (!parsed.ok) {
+        throw new Error(parsed.error || 'Unable to cancel trip.');
+      }
       setMyBookings((prev) =>
         prev.map((row) =>
           row.id === bookingId ? { ...row, status: 'cancelled' } : row
@@ -84,10 +87,10 @@ export function HomeLoginView({
     fetch('/api/my-bookings', {
       headers: { Authorization: `Bearer ${token}` },
     })
-      .then((r) => r.json())
-      .then((json) => {
-        if (active && Array.isArray(json.bookings)) {
-          setMyBookings(json.bookings);
+      .then((r) => readJsonSafe<{ bookings?: CustomerBookingRow[] }>(r))
+      .then((parsed) => {
+        if (active && parsed.ok && Array.isArray(parsed.data?.bookings)) {
+          setMyBookings(parsed.data.bookings);
         }
       })
       .catch(() => {})
@@ -112,9 +115,11 @@ export function HomeLoginView({
           name: customerName,
         }),
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Unable to sign in.');
-      onAuthenticated(json.user, json.token);
+      const parsed = await readJsonSafe<{ user: AuthUser; token: string }>(res);
+      if (!parsed.ok || !parsed.data?.user || !parsed.data?.token) {
+        throw new Error(parsed.error || 'Unable to sign in.');
+      }
+      onAuthenticated(parsed.data.user, parsed.data.token);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Sign-in failed.');
     } finally {
@@ -135,15 +140,29 @@ export function HomeLoginView({
           Authorization: `Bearer ${idToken}`,
         },
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Google sign-in failed.');
-      onAuthenticated(json.user, idToken);
+      const parsed = await readJsonSafe<{ user: AuthUser; token?: string }>(res);
+      if (!parsed.ok || !parsed.data?.user) {
+        throw new Error(parsed.error || 'Google sign-in failed.');
+      }
+      onAuthenticated(parsed.data.user, parsed.data.token || idToken);
     } catch (err: unknown) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : 'Google popup sign-in was cancelled or blocked.'
-      );
+      const code =
+        typeof err === 'object' && err !== null && 'code' in err
+          ? String((err as { code?: string }).code || '')
+          : '';
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+        setError('Google sign-in popup was closed. You can also sign in with your email above.');
+      } else if (code === 'auth/popup-blocked') {
+        setError('Popup was blocked by your browser. Please allow popups or sign in with your email above.');
+      } else if (code === 'auth/unauthorized-domain') {
+        setError('Google popup is not enabled for this domain. Please use Continue with Email above.');
+      } else {
+        setError(
+          err instanceof Error
+            ? err.message
+            : 'Google sign-in could not complete. Please use Continue with Email above.'
+        );
+      }
     } finally {
       setLoading(false);
     }
@@ -162,9 +181,11 @@ export function HomeLoginView({
           password: ownerPassword,
         }),
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Owner authentication failed.');
-      onAuthenticated(json.user, json.token);
+      const parsed = await readJsonSafe<{ user: AuthUser; token: string }>(res);
+      if (!parsed.ok || !parsed.data?.user || !parsed.data?.token) {
+        throw new Error(parsed.error || 'Owner authentication failed.');
+      }
+      onAuthenticated(parsed.data.user, parsed.data.token);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Owner login failed.');
     } finally {

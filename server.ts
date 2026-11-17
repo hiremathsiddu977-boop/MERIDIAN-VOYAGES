@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import crypto from 'node:crypto';
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -121,7 +122,13 @@ async function startServer() {
     try {
       const user = req.sessionUser!;
       await upsertUser(user.uid, user.email, user.name, user.role);
-      return res.json({ user });
+      const token = signSessionToken({
+        uid: user.uid,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+      });
+      return res.json({ user, token });
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : 'Failed to sync user.';
       return res.status(500).json({ error: msg });
@@ -130,6 +137,15 @@ async function startServer() {
 
   app.get('/api/auth/me', requireAuth, (req: AuthRequest, res) => {
     return res.json({ user: req.sessionUser });
+  });
+
+  app.get('/api/health', async (_req, res) => {
+    try {
+      await getCustomDestinations();
+      return res.json({ status: 'ok' });
+    } catch {
+      return res.status(503).json({ status: 'degraded' });
+    }
   });
 
   // Public: Load custom destination packages created by Owner
@@ -159,25 +175,45 @@ async function startServer() {
         notes,
       } = req.body || {};
 
-      if (!packageSlug || !customerName || !customerEmail || !departureDate) {
-        return res.status(400).json({ error: 'Missing required booking fields.' });
+      const cleanSlug = String(packageSlug || '').trim();
+      const cleanName = String(customerName || '').trim();
+      const cleanEmail = String(customerEmail || '').trim().toLowerCase();
+      const cleanDeparture = String(departureDate || '').trim();
+
+      if (!cleanSlug || !cleanName || !cleanEmail || !cleanDeparture) {
+        return res.status(400).json({ error: 'Please complete your name, email, and departure date.' });
+      }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+        return res.status(400).json({ error: 'Please enter a valid email address.' });
       }
 
-      const guestCount = Math.max(1, Number(guests) || 1);
-      const perGuest = Math.max(100, Number(unitPrice) || 2500);
-      const revenue = perGuest * guestCount;
+      const rawGuests = Number(guests);
+      const guestCount = Number.isFinite(rawGuests)
+        ? Math.max(1, Math.min(1_000_000_000, Math.round(rawGuests)))
+        : 1;
+      const rawPrice = Number(unitPrice);
+      const perGuest = Number.isFinite(rawPrice)
+        ? Math.max(100, Math.min(1_000_000, Math.round(rawPrice)))
+        : 2500;
+      const revenue = Math.min(
+        Number.MAX_SAFE_INTEGER,
+        Math.round(perGuest * guestCount)
+      );
       // Partner hotel, transfer, and excursion wholesale cost (~62% of gross booking)
-      const cost = Math.round(revenue * 0.62);
-      const reference = `MV-${Math.floor(1000 + Math.random() * 9000)}`;
+      const cost = Math.min(
+        Number.MAX_SAFE_INTEGER,
+        Math.round(revenue * 0.62)
+      );
+      const reference = `MV-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 
       const created = await createBookingRecord({
         reference,
-        packageSlug: String(packageSlug),
-        packageTitle: String(packageTitle || packageSlug),
-        destination: String(destination || 'Global'),
-        customerName: String(customerName).trim(),
-        customerEmail: String(customerEmail).trim().toLowerCase(),
-        departureDate: String(departureDate),
+        packageSlug: cleanSlug,
+        packageTitle: String(packageTitle || cleanSlug).trim(),
+        destination: String(destination || 'Global').trim(),
+        customerName: cleanName,
+        customerEmail: cleanEmail,
+        departureDate: cleanDeparture,
         guests: guestCount,
         tier: tier === 'private' ? 'private' : 'signature',
         revenue,
@@ -231,16 +267,26 @@ async function startServer() {
   app.post('/api/inquiries', async (req, res) => {
     try {
       const { companyOrName, email, destination, groupSize, details } = req.body || {};
-      if (!companyOrName || !email || !destination) {
+      const cleanCompany = String(companyOrName || '').trim();
+      const cleanEmail = String(email || '').trim().toLowerCase();
+      const cleanDest = String(destination || '').trim();
+      if (!cleanCompany || !cleanEmail || !cleanDest) {
         return res.status(400).json({ error: 'Please complete all required fields.' });
       }
-      const reference = `INQ-${Math.floor(1000 + Math.random() * 9000)}`;
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+        return res.status(400).json({ error: 'Please enter a valid email address.' });
+      }
+      const rawGroupSize = Number(groupSize);
+      const cleanGroupSize = Number.isFinite(rawGroupSize)
+        ? Math.max(1, Math.min(1_000_000_000, Math.round(rawGroupSize)))
+        : 1;
+      const reference = `INQ-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
       const created = await createInquiryRecord({
         reference,
-        companyOrName: String(companyOrName).trim(),
-        email: String(email).trim().toLowerCase(),
-        destination: String(destination).trim(),
-        groupSize: Math.max(1, Number(groupSize) || 1),
+        companyOrName: cleanCompany,
+        email: cleanEmail,
+        destination: cleanDest,
+        groupSize: cleanGroupSize,
         details: String(details || '').trim(),
       });
       return res.status(201).json({ inquiry: created });
@@ -566,6 +612,11 @@ async function startServer() {
         error: 'Unable to reach the travel concierge right now. Please try again.',
       });
     }
+  });
+
+  // Return clean JSON 404 for any unmatched /api/* route instead of falling through to HTML
+  app.all('/api/*', (_req, res) => {
+    return res.status(404).json({ error: 'Requested service endpoint not found.' });
   });
 
   // Serve Vite in dev or built dist/ in production

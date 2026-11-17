@@ -15,6 +15,7 @@ import {
   Region,
   TravelPackage,
 } from '../data/packages';
+import { readJsonSafe } from '../lib/api';
 
 export interface OwnerDashboardPayload {
   summary: {
@@ -205,9 +206,11 @@ export function OwnerDashboard({
       const res = await fetch('/api/owner/dashboard', {
         headers: { Authorization: `Bearer ${token}` },
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Failed to load owner console.');
-      setData(json);
+      const parsed = await readJsonSafe<OwnerDashboardPayload>(res);
+      if (!parsed.ok || !parsed.data) {
+        throw new Error(parsed.error || 'Failed to load owner console.');
+      }
+      setData(parsed.data);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unable to load dashboard.');
     } finally {
@@ -403,12 +406,12 @@ export function OwnerDashboard({
         }),
       });
 
-      const json = await res.json();
-      if (!res.ok) {
-        throw new Error(json.error || 'Unable to publish destination.');
+      const parsed = await readJsonSafe<{ package?: TravelPackage }>(res);
+      if (!parsed.ok || !parsed.data?.package) {
+        throw new Error(parsed.error || 'Unable to publish destination.');
       }
 
-      setDestSuccessSlug(json.package.slug);
+      setDestSuccessSlug(parsed.data.package.slug);
       setDestTitle('');
       setDestSlug('');
       setSlugEditedManually(false);
@@ -1447,7 +1450,7 @@ export function OwnerDashboard({
               </div>
 
               <div className="flex flex-wrap items-center gap-1 rounded-xl border border-white/15 bg-slate-950/50 p-1">
-                {(['all', 'confirmed', 'pending', 'refunded'] as const).map(
+                {(['all', 'confirmed', 'pending', 'cancelled', 'refunded'] as const).map(
                   (tab) => (
                     <button
                       key={tab}

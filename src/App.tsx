@@ -19,6 +19,7 @@ import {
 import { AuthUser, HomeLoginView } from './components/HomeLoginView';
 import { OwnerDashboard } from './components/OwnerDashboard';
 import { ChatPanelMode, GeminiChatbot } from './components/GeminiChatbot';
+import { readJsonSafe } from './lib/api';
 
 type SortOption = 'featured' | 'price-asc' | 'days-asc';
 type RegionFilter = 'All' | Region;
@@ -67,6 +68,10 @@ function ImageFrame({
 }) {
   const [failed, setFailed] = useState(false);
 
+  useEffect(() => {
+    setFailed(false);
+  }, [src]);
+
   return (
     <div className={`relative overflow-hidden bg-slate-900 ${className}`}>
       {!failed ? (
@@ -104,17 +109,19 @@ export default function App() {
   const [sortBy, setSortBy] = useState<SortOption>('featured');
   const [chatMode, setChatMode] = useState<ChatPanelMode>('minimized');
   const [customPackages, setCustomPackages] = useState<TravelPackage[]>([]);
+  const [loadingCustomPackages, setLoadingCustomPackages] = useState(true);
 
   const refreshCustomPackages = useCallback(async () => {
     try {
       const res = await fetch('/api/packages');
-      if (!res.ok) return;
-      const json = await res.json();
-      if (Array.isArray(json.packages)) {
-        setCustomPackages(json.packages);
+      const parsed = await readJsonSafe<{ packages?: TravelPackage[] }>(res);
+      if (parsed.ok && Array.isArray(parsed.data?.packages)) {
+        setCustomPackages(parsed.data.packages);
       }
     } catch {
       // Built-in packages remain immediately available
+    } finally {
+      setLoadingCustomPackages(false);
     }
   }, []);
 
@@ -395,6 +402,13 @@ export default function App() {
             onBack={() => navigate('/')}
             onManageTrips={() => navigate('/home')}
           />
+        ) : route.view === 'package' && !activePackage && loadingCustomPackages ? (
+          <div className="glass-panel mx-auto max-w-xl rounded-2xl p-10 text-center">
+            <div className="mx-auto h-7 w-48 rounded-lg bg-white/10 animate-pulse" />
+            <p className="mt-3 text-sm text-slate-300">
+              Loading itinerary details...
+            </p>
+          </div>
         ) : route.view === 'package' && !activePackage ? (
           <div className="glass-panel mx-auto max-w-xl rounded-2xl p-10 text-center">
             <h1 className="font-display text-3xl font-semibold text-white">
@@ -713,7 +727,11 @@ function PackageDetailView({
   onBack: () => void;
   onManageTrips: () => void;
 }) {
-  const [departure, setDeparture] = useState(pkg.departures[0]);
+  const departureOptions =
+    pkg.departures && pkg.departures.length > 0
+      ? pkg.departures
+      : ['Flexible Departure'];
+  const [departure, setDeparture] = useState(departureOptions[0]);
   const [guestsInput, setGuestsInput] = useState('2');
   const [tier, setTier] = useState<'signature' | 'private'>('signature');
   const [fullName, setFullName] = useState(user?.name || '');
@@ -724,10 +742,17 @@ function PackageDetailView({
   const [bookingRef, setBookingRef] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  const guests = Math.max(1, Math.floor(Number(guestsInput) || 1));
+  const parsedGuests = Number(guestsInput);
+  const guests = Number.isFinite(parsedGuests)
+    ? Math.max(1, Math.min(1_000_000_000, Math.floor(parsedGuests)))
+    : 1;
 
   useEffect(() => {
-    setDeparture(pkg.departures[0]);
+    setDeparture(
+      pkg.departures && pkg.departures.length > 0
+        ? pkg.departures[0]
+        : 'Flexible Departure'
+    );
     setGuestsInput('2');
     setTier('signature');
     setBookingRef(null);
@@ -736,10 +761,10 @@ function PackageDetailView({
 
   useEffect(() => {
     if (user) {
-      if (!fullName) setFullName(user.name);
-      if (!email) setEmail(user.email);
+      setFullName((prev) => prev || user.name);
+      setEmail((prev) => prev || user.email);
     }
-  }, [user, fullName, email]);
+  }, [user]);
 
   const unitPrice =
     pkg.basePrice + (tier === 'private' ? pkg.privateUpgrade : 0);
@@ -765,6 +790,7 @@ function PackageDetailView({
       setError('Please enter a valid work or personal email.');
       return;
     }
+    setGuestsInput(String(guests));
     setError('');
     setSubmitting(true);
 
@@ -778,16 +804,18 @@ function PackageDetailView({
           destination: pkg.country,
           customerName: fullName.trim(),
           customerEmail: email.trim(),
-          departureDate: departure,
+          departureDate: departure || departureOptions[0],
           guests,
           tier,
           unitPrice,
           notes,
         }),
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Unable to reserve package.');
-      setBookingRef(json.booking.reference);
+      const parsed = await readJsonSafe<{ booking?: { reference: string } }>(res);
+      if (!parsed.ok || !parsed.data?.booking?.reference) {
+        throw new Error(parsed.error || 'Unable to reserve package.');
+      }
+      setBookingRef(parsed.data.booking.reference);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unable to save booking.');
     } finally {
@@ -1044,7 +1072,7 @@ function PackageDetailView({
                     onChange={(e) => setDeparture(e.target.value)}
                     className="mt-1.5 w-full rounded-xl border border-white/20 bg-slate-950/65 px-3.5 py-2.5 text-sm text-white focus:border-amber-300 focus:outline-none"
                   >
-                    {pkg.departures.map((d) => (
+                    {departureOptions.map((d) => (
                       <option key={d} value={d}>
                         {d}
                       </option>
@@ -1263,9 +1291,11 @@ function BusinessInquiryView({
           details: details.trim(),
         }),
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Unable to submit proposal.');
-      setSubmittedRef(json.inquiry.reference);
+      const parsed = await readJsonSafe<{ inquiry?: { reference: string } }>(res);
+      if (!parsed.ok || !parsed.data?.inquiry?.reference) {
+        throw new Error(parsed.error || 'Unable to submit proposal.');
+      }
+      setSubmittedRef(parsed.data.inquiry.reference);
     } catch (err: unknown) {
       setError(
         err instanceof Error ? err.message : 'Unable to send proposal request.'
