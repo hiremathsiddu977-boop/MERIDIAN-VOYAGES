@@ -1,6 +1,8 @@
 node_modules/
 build/
 dist/
+server.js
+.vercel
 coverage/
 .DS_Store
 *.log

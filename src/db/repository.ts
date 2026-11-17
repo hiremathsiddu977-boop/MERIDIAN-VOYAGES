@@ -1,5 +1,5 @@
 import { and, desc, eq } from 'drizzle-orm';
-import { db } from './index.ts';
+import { db, ensureSchemaReady, isDatabaseConfigured } from './index';
 import {
   bookings,
   DestinationItineraryDay,
@@ -7,7 +7,7 @@ import {
   expenses,
   inquiries,
   users,
-} from './schema.ts';
+} from './schema';
 
 export async function upsertUser(
   uid: string,
@@ -16,6 +16,7 @@ export async function upsertUser(
   role: 'customer' | 'owner'
 ) {
   try {
+    await ensureSchemaReady();
     const result = await db
       .insert(users)
       .values({ uid, email, name, role })
@@ -46,6 +47,7 @@ export async function createBookingRecord(input: {
   notes?: string;
 }) {
   try {
+    await ensureSchemaReady();
     const result = await db
       .insert(bookings)
       .values({
@@ -73,6 +75,7 @@ export async function createBookingRecord(input: {
 
 export async function getBookingsByCustomerEmail(email: string) {
   try {
+    await ensureSchemaReady();
     return await db
       .select()
       .from(bookings)
@@ -89,6 +92,7 @@ export async function cancelCustomerBookingRecord(
   customerEmail: string
 ) {
   try {
+    await ensureSchemaReady();
     const existing = await db
       .select()
       .from(bookings)
@@ -136,6 +140,7 @@ export async function createInquiryRecord(input: {
   details: string;
 }) {
   try {
+    await ensureSchemaReady();
     const result = await db
       .insert(inquiries)
       .values({
@@ -156,7 +161,11 @@ export async function createInquiryRecord(input: {
 }
 
 export async function getCustomDestinations() {
+  if (!isDatabaseConfigured()) {
+    return [];
+  }
   try {
+    await ensureSchemaReady();
     const rows = await db
       .select()
       .from(destinations)
@@ -192,6 +201,7 @@ export async function createCustomDestination(input: {
   itinerary: DestinationItineraryDay[];
 }) {
   try {
+    await ensureSchemaReady();
     const existing = await db
       .select({ id: destinations.id })
       .from(destinations)
@@ -222,6 +232,7 @@ export async function createCustomDestination(input: {
 
 export async function deleteCustomDestination(id: number) {
   try {
+    await ensureSchemaReady();
     const deleted = await db
       .delete(destinations)
       .where(eq(destinations.id, id))
@@ -235,6 +246,7 @@ export async function deleteCustomDestination(id: number) {
 
 export async function getOwnerDashboardData() {
   try {
+    await ensureSchemaReady();
     const [allBookings, allExpenses, allInquiries, allUsers, customDestinations] =
       await Promise.all([
         db.select().from(bookings).orderBy(desc(bookings.id)),
@@ -353,6 +365,7 @@ export async function getOwnerDashboardData() {
 
 export async function updateBookingStatusRecord(id: number, status: string) {
   try {
+    await ensureSchemaReady();
     const result = await db
       .update(bookings)
       .set({ status })
@@ -374,6 +387,7 @@ export async function addExpenseRecord(input: {
   recordedDate: string;
 }) {
   try {
+    await ensureSchemaReady();
     const result = await db
       .insert(expenses)
       .values(input)
@@ -387,6 +401,7 @@ export async function addExpenseRecord(input: {
 
 export async function updateInquiryStatusRecord(id: number, status: string) {
   try {
+    await ensureSchemaReady();
     const result = await db
       .update(inquiries)
       .set({ status })

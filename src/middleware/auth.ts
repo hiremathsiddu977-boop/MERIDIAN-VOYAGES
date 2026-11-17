@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { Request, Response, NextFunction } from 'express';
-import { adminAuth } from '../lib/firebase-admin.ts';
+import { adminAuth } from '../lib/firebase-admin';
 
 export const OWNER_EMAIL = 'hiremathsiddu@gmail.com';
 const SESSION_SECRET =
